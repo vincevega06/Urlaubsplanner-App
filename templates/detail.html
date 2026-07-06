@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ trip.title }} - Details</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 100%; margin: 40px; padding: 0 20px; background: #fafafa; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #007BFF; text-decoration: none; }
+        .section { background: white; padding: 20px; border-radius: 8px; border: 1px solid #e0e0e0; margin-bottom: 20px; }
+        .done { text-decoration: line-through; color: gray; }
+        .flex-form { display: flex; gap: 10px; margin-top: 10px; }
+        .flex-form input, .flex-form select { padding: 8px; }
+        .flex-form button { width: auto; padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <a href="/" class="back-link">← Zurück zur Übersicht</a>
+    
+    <h1>{{ trip.title }}</h1>
+    <p>📍 <strong>Ziel:</strong> {{ trip.destination }} | 📅 {{ trip.start_date }} bis {{ trip.end_date }}</p>
+<!-- NEU: KALENDERANSICHT / TAGESPLANER -->
+    <div class="section">
+        <h2>📅 Mein Reise-Kalender</h2>
+        
+        <!-- Formular zum Hinzufügen einer Aktivität (bleibt kompakt) -->
+        <form action="/trip/{{ trip.id }}/add_activity" method="POST" class="flex-form" style="margin-bottom: 20px;">
+            <input type="date" name="activity_date" min="{{ trip.start_date }}" max="{{ trip.end_date }}" required style="width: 140px;">
+            <input type="time" name="activity_time" required style="width: 100px;">
+            <input type="text" name="activity" placeholder="Neue Aktivität (z.B. Strand-Tag)" required style="flex-grow: 1;">
+            <button type="submit" style="background: #6f42c1; color: white;">+ Event</button>
+        </form>
+
+        <!-- DAS KALENDER GRID -->
+        <!-- DAS KALENDER GRID (JETZT HORIZONTAL SCROLLBAR) -->
+        <div style="overflow-x: auto; white-space: nowrap; padding-bottom: 15px; margin-top: 15px; display: flex; gap: 15px; scrollbar-width: thin;">
+            
+            {% for date, activities in calendar_data.items() %}
+                <!-- Jede Tageskarte behält eine feste Breite, damit sie nebeneinander stehen -->
+                <div style="background: #f8f9fa; border: 1px solid #dee2e6; border-top: 5px solid #6f42c1; border-radius: 6px; padding: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); min-width: 250px; max-width: 250px; display: inline-block; vertical-align: top; white-space: normal;">
+                    
+                    <!-- Tages-Überschrift -->
+                    <h4 style="margin: 0 0 10px 0; color: #495057; border-bottom: 1px solid #dee2e6; padding-bottom: 5px; font-size: 14px;">
+                        📅 {{ date }}
+                    </h4>
+                    
+                    <!-- Aktivitäten an diesem Tag -->
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        {% for item in activities %}
+                            <div style="background: white; border: 1px solid #e9ecef; border-left: 3px solid #6f42c1; padding: 6px 8px; border-radius: 3px; display: flex; justify-content: space-between; align-items: flex-start; font-size: 13px;">
+                                <div style="word-break: break-word; max-width: 85%;">
+                                    <strong style="color: #6f42c1; display: block; font-size: 11px;">🕒 {{ item.activity_time }} Uhr</strong>
+                                    {{ item.activity }}
+                                </div>
+                                <a href="/trip/{{ trip.id }}/delete_activity/{{ item.id }}" 
+                                   style="color: #dc3545; text-decoration: none; font-size: 11px; margin-left: 5px;" 
+                                   onclick="return confirm('Aktivität loeschen?')">❌</a>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% else %}
+                <p style="color: gray; font-style: italic;">Noch keine Aktivitäten eingetragen. Nutze das Formular oben, um deinen ersten Kalendertag zu füllen!</p>
+            {% endfor %}
+
+        </div>
+    </div>
+<!-- SPRECHUNG: TO-DOS VS PACKLISTE -->
+    <div style="display: flex; gap: 20px;">
+        
+        <!-- LINKEN SPALTE: ECHTE TO-DOS -->
+        <div class="section" style="flex: 1;">
+            <h2>📝 Vorbereitung & To-Dos</h2>
+            <form action="/trip/{{ trip.id }}/add_todo" method="POST" class="flex-form">
+                <input type="hidden" name="type" value="task">
+                <input type="text" name="task" placeholder="z.B. Vignette kaufen" required style="flex-grow: 1;">
+                <button type="submit">Hinzufügen</button>
+            </form>
+            <ul style="list-style: none; padding: 0; margin-top: 15px;">
+                {% for todo in todos %}
+                    <li style="margin-bottom: 8px;">
+                        <a href="/trip/{{ trip.id }}/toggle_todo/{{ todo.id }}" style="text-decoration: none; font-size: 18px; margin-right: 10px;">
+                            {% if todo.done %} ✅ {% else %} 🔲 {% endif %}
+                        </a>
+                        <span class="{% if todo.done %}done{% endif %}">{{ todo.task }}</span>
+                    </li>
+                {% else %}
+                    <li style="color: gray; font-style: italic;">Keine offenen Aufgaben.</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <!-- RECHTE SPALTE: PACKLISTE -->
+        <div class="section" style="flex: 1;">
+            <h2>🎒 Packliste</h2>
+            <form action="/trip/{{ trip.id }}/add_todo" method="POST" class="flex-form">
+                <input type="hidden" name="type" value="pack">
+                <input type="text" name="task" placeholder="z.B. Badehose einpacken" required style="flex-grow: 1;">
+                <button type="submit" style="background: #ffc107; color: #212529;">Hinzufügen</button>
+            </form>
+            <ul style="list-style: none; padding: 0; margin-top: 15px;">
+                {% for item in packing_list %}
+                    <li style="margin-bottom: 8px;">
+                        <a href="/trip/{{ trip.id }}/toggle_todo/{{ item.id }}" style="text-decoration: none; font-size: 18px; margin-right: 10px;">
+                            {% if item.done %} ✅ {% else %} 🔲 {% endif %}
+                        </a>
+                        <span class="{% if item.done %}done{% endif %}">{{ item.task }}</span>
+                    </li>
+                {% else %}
+                    <li style="color: gray; font-style: italic;">Die Packliste ist noch leer.</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+    </div>
+
+
+<!-- BUDGET & NOTIZEN NEBENEINANDER -->
+    <div style="display: flex; gap: 20px; margin-top: 20px;">
+        
+        <!-- Budget auf der linken Seite -->
+        <div class="section" style="flex: 1;">
+            <!-- Hier kommt dein bisheriger <!-- PHASE 3: BUDGET TRACKER --> 
+             <div class="section">
+        <h2>💰 Ausgaben-Tracker</h2>
+        <h3>Gesamtausgaben bisher: <span style="color: #dc3545;">{{ total_expenses }} €</span></h3>
+        
+        <form action="/trip/{{ trip.id }}/add_expense" method="POST" class="flex-form">
+            <input type="number" step="0.01" name="amount" placeholder="Betrag (€)" required style="width: 100px;">
+            <select name="category">
+                <option value="Transport">✈️ Transport</option>
+                <option value="Unterkunft">🏨 Unterkunft</option>
+                <option value="Verpflegung">🍕 Essen</option>
+                <option value="Aktivitäten">🎟️ Freizeit</option>
+            </select>
+            <input type="text" name="description" placeholder="Notiz (z.B. Hostel Rom)" required style="flex-grow: 1;">
+            <button type="submit">Eintragen</button>
+        </form>
+
+<ul style="list-style: none; padding: 0; margin-top: 15px;">
+            {% for exp in expenses %}
+                <li style="display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid #eee; background: #fff; margin-bottom: 5px; border-radius: 4px;">
+                    <div>
+                        <strong style="color: #dc3545;">{{ "%.2f"|format(exp.amount) }} €</strong> 
+                        <span style="color: #7f8c8d; font-size: 13px; margin-left: 8px; background: #eaedf1; padding: 2px 6px; border-radius: 3px;">{{ exp.category }}</span>
+                        <span style="margin-left: 10px;">{{ exp.description }}</span>
+                    </div>
+                    <a href="/trip/{{ trip.id }}/delete_expense/{{ exp.id }}" 
+                       style="color: #dc3545; text-decoration: none; font-weight: bold; font-size: 14px; padding: 2px 8px; border-radius: 4px; transition: background 0.2s;" 
+                       onclick="return confirm('Ausgabe wirklich löschen?')"
+                       onmouseover="this.style.background='#fde8e8'" 
+                       onmouseout="this.style.background='transparent'">
+                        ❌
+                    </a>
+                </li>
+            {% else %}
+                <li style="color: gray; font-style: italic;">Noch keine Ausgaben eingetragen.</li>
+            {% endfor %}
+        </ul>
+    </div>
+</body>^
+
+        </div>
+
+        <!-- Notizen auf der rechten Seite -->
+        <div class="section" style="flex: 1;">
+            <!-- Hier kommt dein bisheriger <!-- NEU: NOTIZEN BEREICH --> 
+    <div class="section">
+        <h2>📌 Wichtige Notizen & Infos</h2>
+        <form action="/trip/{{ trip.id }}/save_notes" method="POST">
+            <textarea name="notes" rows="8" style="width: 100%; box-sizing: border-box; padding: 10px; font-family: inherit; border-radius: 4px; border: 1px solid #ccc; resize: vertical;" placeholder="Hier ist Platz für Buchungsnummern, Hotel-Adressen, Flugzeiten oder Links... Layouts bleiben als Text erhalten.">{{ trip.notes or '' }}</textarea>
+            <button type="submit" style="width: auto; margin-top: 10px; background: #17a2b8; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Notizen speichern</button>
+        </form>
+    </div>
+</html>
+        </div>
+
+    </div>

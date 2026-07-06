@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Semester-Trip-Tracker</title>
+    <style>
+       body { font-family: Arial, sans-serif; max-width: 100%; margin: 40px; padding: 0 20px; background: #fafafa; }
+        form { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e0e0e0; }
+        input, select, button { margin: 5px 0; padding: 10px; width: 100%; box-sizing: border-box; border-radius: 4px; border: 1px solid #ccc; }
+        button { background: #007BFF; color: white; border: none; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        .trip-card { background: #fff; border: 1px solid #e0e0e0; padding: 15px; margin-bottom: 12px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .trip-link { text-decoration: none; color: #333; flex-grow: 1; }
+        .btn-delete { background: #dc3545; color: white; width: auto; padding: 5px 10px; text-decoration: none; border-radius: 4px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h1>Mein Urlaubsplanner 🌍</h1>
+<!-- NEU: GLOBAL FINANCIAL DASHBOARD -->
+    <div style="background: #2c3e50; color: white; padding: 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h2 style="margin-top: 0; color: #ecf0f1; border-bottom: 1px solid #34495e; padding-bottom: 10px;">💰 Finanz-Dashboard</h2>
+        
+        <div style="display: flex; gap: 20px; align-items: center; margin-top: 15px;">
+            <!-- Große Gesamtsumme -->
+            <div style="background: #1bc5bd; padding: 15px; border-radius: 6px; flex: 1; text-align: center;">
+                <span style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; display: block; opacity: 0.9;">Gesamtausgaben aller Trips</span>
+                <strong style="font-size: 28px; display: block; margin-top: 5px;">{{ "%.2f"|format(total_all_trips) }} €</strong>
+            </div>
+            
+            <!-- Aufteilung nach Kategorien -->
+            <div style="flex: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div style="background: #34495e; padding: 10px; border-radius: 4px;">
+                    ✈️ Transport: <strong>{{ "%.2f"|format(category_totals['Transport']) }} €</strong>
+                </div>
+                <div style="background: #34495e; padding: 10px; border-radius: 4px;">
+                    🏨 Unterkunft: <strong>{{ "%.2f"|format(category_totals['Unterkunft']) }} €</strong>
+                </div>
+                <div style="background: #34495e; padding: 10px; border-radius: 4px;">
+                    🍕 Essen: <strong>{{ "%.2f"|format(category_totals['Verpflegung']) }} €</strong>
+                </div>
+                <div style="background: #34495e; padding: 10px; border-radius: 4px;">
+                    🎟️ Freizeit: <strong>{{ "%.2f"|format(category_totals['Aktivitäten']) }} €</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <form action="/add" method="POST">
+        <h3>Neuen Trip planen</h3>
+        <input type="text" name="title" placeholder="Titel (z.B. Roadtrip durch Italien)" required>
+        <input type="text" name="destination" placeholder="Zielort" required>
+        <label>Startdatum:</label> <input type="date" name="start_date" required>
+        <label>Enddatum:</label> <input type="date" name="end_date" required>
+        <label>Status:</label>
+        <select name="status">
+            <option value="Idee">💡 Idee</option>
+            <option value="Gebucht">📅 Gebucht</option>
+            <option value="Abgeschlossen">✅ Abgeschlossen</option>
+        </select>
+        <button type="submit">Trip speichern</button>
+    </form>
+
+    <hr>
+
+<h2>Geplante Trips (Klicke für Details)</h2>
+    <div>
+        {% for trip in trips %}
+            <div class="trip-card">
+                <a href="/trip/{{ trip.id }}" class="trip-link">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <h3 style="margin: 0;">{{ trip.title }} ({{ trip.status }})</h3>
+                        <!-- NEU: Das Countdown-Badge -->
+                        <span style="background: #e1f5fe; color: #0288d1; padding: 4px 10px; border-radius: 20px; font-size: 13px; font-weight: bold;">
+                            {{ trip.countdown_text }}
+                        </span>
+                    </div>
+                    <p style="margin: 0; color: #555;">📍 {{ trip.destination }} | 📅 {{ trip.start_date }} bis {{ trip.end_date }}</p>
+                </a>
+                <a href="/trip/{{ trip.id }}/delete" class="btn-delete" onclick="return confirm('Trip wirklich löschen?')">Löschen</a>
+            </div>
+        {% else %}
+            <p>Noch keine Trips geplant. Zeit für Urlaub! 🗺️</p>
+        {% endfor %}
+    </div>
+</body>
+</html>
