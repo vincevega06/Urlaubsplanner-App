@@ -1,111 +1,106 @@
 from flask import Flask, render_template, request, redirect
-import sqlite3
+from datetime import datetime
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
+# CHANGER: Hier fügst du deine kopierte URI von Supabase ein!
+DATABASE_URL ="postgresql://postgres.qyqsyppkuakmmwzrjsft:vasgig7fixcypuKsyg@aws-1-eu-west-2.pooler.supabase.com:6543/postgres"
+
 def get_db():
-    conn = sqlite3.connect('database.db')
-    conn.row_factory = sqlite3.Row
+    # Verbindet sich direkt mit der Cloud-Datenbank
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return conn
 
+# Initialisierung der Cloud-Datenbank
 def init_db():
-    with get_db() as conn:
-        # Haupttabelle für die Trips (bleibt gleich)
-        conn.execute('''CREATE TABLE IF NOT EXISTS trips 
-                        (id INTEGER PRIMARY KEY, title TEXT, destination TEXT, 
-                         start_date TEXT, end_date TEXT, status TEXT)''')
+    conn = get_db()
+    with conn.cursor() as cur:
+        # 1. Haupttabelle für Trips
+        cur.execute('''CREATE TABLE IF NOT EXISTS trips 
+                       (id SERIAL PRIMARY KEY, title TEXT, destination TEXT, 
+                        start_date TEXT, end_date TEXT, status TEXT, notes TEXT DEFAULT '')''')
         
-        # Die Notizen-Spalte (hast du im Schritt davor schon eingebaut)
-        try:
-            conn.execute('ALTER TABLE trips ADD COLUMN notes TEXT DEFAULT ""')
-        except sqlite3.OperationalError:
-            pass
-            
-        # Die To-Do-Tabelle inklusive Typ (hast du auch schon)
-        conn.execute('''CREATE TABLE IF NOT EXISTS todos 
-                        (id INTEGER PRIMARY KEY, trip_id INTEGER, task TEXT, done INTEGER DEFAULT 0, type TEXT DEFAULT "task")''')
+        # 2. Tabelle für To-Dos & Packlisten
+        cur.execute('''CREATE TABLE IF NOT EXISTS todos 
+                       (id SERIAL PRIMARY KEY, trip_id INTEGER, task TEXT, done INTEGER DEFAULT 0, type TEXT DEFAULT 'task')''')
         
-        # Die Ausgaben-Tabelle (bleibt gleich)
-        conn.execute('''CREATE TABLE IF NOT EXISTS expenses 
-                        (id INTEGER PRIMARY KEY, trip_id INTEGER, amount REAL, category TEXT, description TEXT)''')
+        # 3. Tabelle für Ausgaben
+        cur.execute('''CREATE TABLE IF NOT EXISTS expenses 
+                       (id SERIAL PRIMARY KEY, trip_id INTEGER, amount REAL, category TEXT, description TEXT)''')
         
-        # NEU: Das fügst du jetzt neu hinzu für den Tagesplan
-        conn.execute('''CREATE TABLE IF NOT EXISTS itinerary 
-                        (id INTEGER PRIMARY KEY, trip_id INTEGER, 
-                         activity_date TEXT, activity_time TEXT, activity TEXT)''')
-init_db()
+        # 4. Tabelle für den Kalender / Zeitplan
+        cur.execute('''CREATE TABLE IF NOT EXISTS itinerary 
+                       (id SERIAL PRIMARY KEY, trip_id INTEGER, activity_date TEXT, activity_time TEXT, activity TEXT)''')
+        
+        conn.commit()
+    conn.close()
 
-from datetime import datetime  # NEU: Ganz oben zu den Imports hinzufügen!
+init_db()
 
 @app.route('/')
 def index():
     conn = get_db()
-    trips_raw = conn.execute('SELECT * FROM trips').fetchall()
+    with conn.cursor() as cur:
+        cur.execute('SELECT * FROM trips')
+        trips_raw = cur.fetchall()
+        cur.execute('SELECT amount, category FROM expenses')
+        all_expenses = cur.fetchall()
+    conn.close()
     
-    # Finanzen berechnen (bleibt gleich)
-    all_expenses = conn.execute('SELECT amount, category FROM expenses').fetchall()
     total_all_trips = sum(exp['amount'] for exp in all_expenses)
     category_totals = {'Transport': 0.0, 'Unterkunft': 0.0, 'Verpflegung': 0.0, 'Aktivitäten': 0.0}
     for exp in all_expenses:
         if exp['category'] in category_totals:
             category_totals[exp['category']] += exp['amount']
             
-    conn.close()
-    
-    # NEU: Countdown für jeden Trip berechnen
     trips = []
     today = datetime.now().date()
-    
     for row in trips_raw:
-        # Wir machen aus der Zeile ein beschreibbares Dictionary
         trip_dict = dict(row)
-        
         try:
-            # Das gespeicherte Datum (String) in ein Python-Datum umwandeln
             start_date = datetime.strptime(trip_dict['start_date'], '%Y-%m-%d').date()
             end_date = datetime.strptime(trip_dict['end_date'], '%Y-%m-%d').date()
-            
             if today < start_date:
-                # Trip liegt in der Zukunft
-                days_left = (start_date - today).days
-                trip_dict['countdown_text'] = f"⏳ Noch {days_left} Tage"
+                trip_dict['countdown_text'] = f"⏳ Noch {(start_date - today).days} Tage"
             elif start_date <= today <= end_date:
-                # Man ist gerade im Urlaub
-                trip_dict['countdown_text'] = "✈️ Aktuell im Urlaub! Gute Reise!"
+                trip_dict['countdown_text'] = "✈️ Aktuell im Urlaub!"
             else:
-                # Trip ist vorbei
                 trip_dict['countdown_text'] = "✅ Vorbeigezogen"
-        except (ValueError, TypeError):
-            # Falls mal kein oder ein falsches Datum eingetragen wurde
-            trip_dict['countdown_text'] = "Kein Datum verfügbar"
-            
+        except:
+            trip_dict['countdown_text'] = "Kein Datum"
         trips.append(trip_dict)
     
-    return render_template('index.html', 
-                           trips=trips, 
-                           total_all_trips=total_all_trips, 
-                           category_totals=category_totals)
+    return render_template('index.html', trips=trips, total_all_trips=total_all_trips, category_totals=category_totals)
 
 @app.route('/add', methods=['POST'])
 def add_trip():
-    with get_db() as conn:
-        conn.execute('INSERT INTO trips (title, destination, start_date, end_date, status) VALUES (?, ?, ?, ?, ?)', 
-                     (request.form['title'], request.form['destination'], request.form['start_date'], request.form['end_date'], request.form['status']))
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('INSERT INTO trips (title, destination, start_date, end_date, status) VALUES (%s, %s, %s, %s, %s)', 
+                    (request.form['title'], request.form['destination'], request.form['start_date'], request.form['end_date'], request.form['status']))
+        conn.commit()
+    conn.close()
     return redirect('/')
 
 @app.route('/trip/<int:trip_id>')
 def trip_detail(trip_id):
     conn = get_db()
-    trip = conn.execute('SELECT * FROM trips WHERE id = ?', (trip_id,)).fetchone()
-    todos = conn.execute('SELECT * FROM todos WHERE trip_id = ? AND type = "task"', (trip_id,)).fetchall()
-    packing_list = conn.execute('SELECT * FROM todos WHERE trip_id = ? AND type = "pack"', (trip_id,)).fetchall()
-    expenses = conn.execute('SELECT * FROM expenses WHERE trip_id = ?', (trip_id,)).fetchall()
+    with conn.cursor() as cur:
+        cur.execute('SELECT * FROM trips WHERE id = %s', (trip_id,))
+        trip = cur.fetchone()
+        cur.execute('SELECT * FROM todos WHERE trip_id = %s AND type = \'task\'', (trip_id,))
+        todos = cur.fetchall()
+        cur.execute('SELECT * FROM todos WHERE trip_id = %s AND type = \'pack\'', (trip_id,))
+        packing_list = cur.fetchall()
+        cur.execute('SELECT * FROM expenses WHERE trip_id = %s', (trip_id,))
+        expenses = cur.fetchall()
+        cur.execute('SELECT * FROM itinerary WHERE trip_id = %s ORDER BY activity_date ASC, activity_time ASC', (trip_id,))
+        itinerary_raw = cur.fetchall()
+    conn.close()
+    
     total_expenses = sum(exp['amount'] for exp in expenses)
-    
-    # Alle Aktivitäten holen
-    itinerary_raw = conn.execute('SELECT * FROM itinerary WHERE trip_id = ? ORDER BY activity_date ASC, activity_time ASC', (trip_id,)).fetchall()
-    
-    # NEU: Aktivitäten nach Datum gruppieren für die Kalenderansicht
     calendar_data = {}
     for item in itinerary_raw:
         date_str = item['activity_date']
@@ -113,78 +108,87 @@ def trip_detail(trip_id):
             calendar_data[date_str] = []
         calendar_data[date_str].append(item)
         
-    conn.close()
-    return render_template('detail.html', 
-                           trip=trip, 
-                           todos=todos, 
-                           packing_list=packing_list, 
-                           expenses=expenses, 
-                           total_expenses=total_expenses, 
-                           calendar_data=calendar_data) # Wir übergeben das neue Kalender-Dict
-# NEU: Aktivität hinzufügen
-@app.route('/trip/<int:trip_id>/add_activity', methods=['POST'])
-def add_activity(trip_id):
-    date = request.form['activity_date']
-    time = request.form['activity_time']
-    activity = request.form['activity']
-    with get_db() as conn:
-        conn.execute('INSERT INTO itinerary (trip_id, activity_date, activity_time, activity) VALUES (?, ?, ?, ?)', 
-                     (trip_id, date, time, activity))
-    return redirect(f'/trip/{trip_id}')
+    return render_template('detail.html', trip=trip, todos=todos, packing_list=packing_list, expenses=expenses, total_expenses=total_expenses, calendar_data=calendar_data)
 
-# NEU: Aktivität löschen
-@app.route('/trip/<int:trip_id>/delete_activity/<int:activity_id>')
-def delete_activity(trip_id, activity_id):
-    with get_db() as conn:
-        conn.execute('DELETE FROM itinerary WHERE id = ?', (activity_id,))
-    return redirect(f'/trip/{trip_id}')
-
-# UPDATE: Nimmt jetzt auch den Typen aus dem Formular entgegen
 @app.route('/trip/<int:trip_id>/add_todo', methods=['POST'])
 def add_todo(trip_id):
-    task = request.form['task']
-    item_type = request.form['type'] # 'task' oder 'pack'
-    with get_db() as conn:
-        conn.execute('INSERT INTO todos (trip_id, task, type) VALUES (?, ?, ?)', (trip_id, task, item_type))
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('INSERT INTO todos (trip_id, task, type) VALUES (%s, %s, %s)', (trip_id, request.form['task'], request.form['type']))
+        conn.commit()
+    conn.close()
     return redirect(f'/trip/{trip_id}')
 
 @app.route('/trip/<int:trip_id>/toggle_todo/<int:todo_id>')
 def toggle_todo(trip_id, todo_id):
     conn = get_db()
-    current = conn.execute('SELECT done FROM todos WHERE id = ?', (todo_id,)).fetchone()
-    new_status = 1 if current['done'] == 0 else 0
-    conn.execute('UPDATE todos SET done = ? WHERE id = ?', (new_status, todo_id))
-    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute('SELECT done FROM todos WHERE id = %s', (todo_id,))
+        current = cur.fetchone()
+        new_status = 1 if current['done'] == 0 else 0
+        cur.execute('UPDATE todos SET done = %s WHERE id = %s', (new_status, todo_id))
+        conn.commit()
     conn.close()
     return redirect(f'/trip/{trip_id}')
 
 @app.route('/trip/<int:trip_id>/add_expense', methods=['POST'])
 def add_expense(trip_id):
-    with get_db() as conn:
-        conn.execute('INSERT INTO expenses (trip_id, amount, category, description) VALUES (?, ?, ?, ?)', 
-                     (trip_id, float(request.form['amount']), request.form['category'], request.form['description']))
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('INSERT INTO expenses (trip_id, amount, category, description) VALUES (%s, %s, %s, %s)', 
+                    (trip_id, float(request.form['amount']), request.form['category'], request.form['description']))
+        conn.commit()
+    conn.close()
     return redirect(f'/trip/{trip_id}')
 
 @app.route('/trip/<int:trip_id>/delete_expense/<int:expense_id>')
 def delete_expense(trip_id, expense_id):
-    with get_db() as conn:
-        conn.execute('DELETE FROM expenses WHERE id = ?', (expense_id,))
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('DELETE FROM expenses WHERE id = %s', (expense_id,))
+        conn.commit()
+    conn.close()
+    return redirect(f'/trip/{trip_id}')
+
+@app.route('/trip/<int:trip_id>/add_activity', methods=['POST'])
+def add_activity(trip_id):
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('INSERT INTO itinerary (trip_id, activity_date, activity_time, activity) VALUES (%s, %s, %s, %s)', 
+                    (trip_id, request.form['activity_date'], request.form['activity_time'], request.form['activity']))
+        conn.commit()
+    conn.close()
+    return redirect(f'/trip/{trip_id}')
+
+@app.route('/trip/<int:trip_id>/delete_activity/<int:activity_id>')
+def delete_activity(trip_id, activity_id):
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('DELETE FROM itinerary WHERE id = %s', (activity_id,))
+        conn.commit()
+    conn.close()
+    return redirect(f'/trip/{trip_id}')
+
+@app.route('/trip/<int:trip_id>/save_notes', methods=['POST'])
+def save_notes(trip_id):
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('UPDATE trips SET notes = %s WHERE id = %s', (request.form['notes'], trip_id))
+        conn.commit()
+    conn.close()
     return redirect(f'/trip/{trip_id}')
 
 @app.route('/trip/<int:trip_id>/delete')
 def delete_trip(trip_id):
-    with get_db() as conn:
-        conn.execute('DELETE FROM trips WHERE id = ?', (trip_id,))
-        conn.execute('DELETE FROM todos WHERE trip_id = ?', (trip_id,))
-        conn.execute('DELETE FROM expenses WHERE trip_id = ?', (trip_id,))
+    conn = get_db()
+    with conn.cursor() as cur:
+        cur.execute('DELETE FROM trips WHERE id = %s', (trip_id,))
+        cur.execute('DELETE FROM todos WHERE trip_id = %s', (trip_id,))
+        cur.execute('DELETE FROM expenses WHERE trip_id = %s', (trip_id,))
+        cur.execute('DELETE FROM itinerary WHERE trip_id = %s', (trip_id,))
+        conn.commit()
+    conn.close()
     return redirect('/')
-
-@app.route('/trip/<int:trip_id>/save_notes', methods=['POST'])
-def save_notes(trip_id):
-    notes = request.form['notes']
-    with get_db() as conn:
-        conn.execute('UPDATE trips SET notes = ? WHERE id = ?', (notes, trip_id))
-    return redirect(f'/trip/{trip_id}')
 
 if __name__ == '__main__':
     app.run(debug=True)
