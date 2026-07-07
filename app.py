@@ -7,11 +7,9 @@ import bcrypt
 # Seiteneinstellungen
 st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
 
-# ttl=3600 sorgt dafür, dass die Verbindung nach spätestens einer Stunde erneuert wird
-@st.cache_resource(ttl=3600)
+# 1. Datenbank-Verbindung (Erstellt jedes Mal eine frische Verbindung)
 def get_db():
-    conn = psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
-    return conn
+    return psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
 
 # 2. Initialisierung der Tabellen
 def init_db():
@@ -31,6 +29,7 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS itinerary 
                        (id SERIAL PRIMARY KEY, trip_id INTEGER, activity_date TEXT, activity_time TEXT, activity TEXT)''')
         conn.commit()
+    conn.close()
 
 init_db()
 
@@ -61,18 +60,19 @@ def show_login():
                     user = cur.fetchone()
                     
                     if user:
-                        # Hier prüfen wir das Klartext-Passwort gegen den Hash aus der Datenbank
                         stored_password_hash = user['password'].encode('utf-8')
                         if bcrypt.checkpw(password.encode('utf-8'), stored_password_hash):
                             st.session_state["logged_in"] = True
                             st.session_state["user_id"] = user['id']
                             st.session_state["username"] = username
                             st.success("Erfolgreich eingeloggt!")
+                            conn.close()
                             st.rerun()
                         else:
                             st.error("Falscher Benutzername oder Passwort!")
                     else:
                         st.error("Falscher Benutzername oder Passwort!")
+                conn.close()
                 
     with tab2:
         with st.form("register_form"):
@@ -81,26 +81,24 @@ def show_login():
             submit_reg = st.form_submit_button("Konto erstellen")
             
             if submit_reg and new_username and new_password:
-                # Passwort salzen und hashen (Verschlüsseln)
                 salt = bcrypt.gensalt()
                 hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), salt).decode('utf-8')
                 
                 conn = get_db()
                 with conn.cursor() as cur:
                     try:
-                        # Wir speichern nur noch den unlesbaren Hash!
                         cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (new_username, hashed_password))
                         conn.commit()
                         st.success("Konto erfolgreich erstellt! Du kannst dich jetzt einloggen.")
                     except Exception as e:
                         st.error("Dieser Benutzername ist leider schon vergeben.")
+                conn.close()
 
 # --- SEITE 1: ÜBERSICHT (GEFILTERT NACH USER) ---
 def show_overview():
     st.title(f"🌍 Urlaubsplaner von {st.session_state['username']}")
     user_id = st.session_state["user_id"]
     
-    # Daten abrufen (Nur eigene Trips ODER Trips wo man Collaborator ist)
     conn = get_db()
     with conn.cursor() as cur:
         cur.execute('''
@@ -111,15 +109,14 @@ def show_overview():
         ''', (user_id, user_id))
         trips_raw = cur.fetchall()
         
-        # Finanzen nur für die sichtbaren Trips berechnen
         visible_trip_ids = [t['id'] for t in trips_raw]
         if visible_trip_ids:
             cur.execute('SELECT amount, category FROM expenses WHERE trip_id = ANY(%s)', (visible_trip_ids,))
             all_expenses = cur.fetchall()
         else:
             all_expenses = []
+    conn.close()
     
-    # Berechnungen für das Finanz-Dashboard
     total_all_trips = sum(exp['amount'] for exp in all_expenses)
     category_totals = {'Transport': 0.0, 'Unterkunft': 0.0, 'Verpflegung': 0.0, 'Aktivitäten': 0.0}
     for exp in all_expenses:
@@ -141,7 +138,7 @@ def show_overview():
         
     st.markdown("---")
     
-    # ➕ NEUEN TRIP PLANEN (Man wird automatisch Owner)
+    # ➕ NEUEN TRIP PLANEN
     with st.expander("➕ Neuen Trip planen"):
         with st.form("add_trip_form"):
             title = st.text_input("Titel (z.B. Roadtrip durch Italien)")
@@ -157,6 +154,7 @@ def show_overview():
                     cur.execute('INSERT INTO trips (title, destination, start_date, end_date, status, owner_id) VALUES (%s, %s, %s, %s, %s, %s)', 
                                 (title, destination, str(start_date), str(end_date), status, user_id))
                     conn.commit()
+                conn.close()
                 st.success("Trip gespeichert!")
                 st.rerun()
 
@@ -187,7 +185,6 @@ def show_overview():
                 if st.button("Details öffnen 📂", key=f"open_{trip['id']}"):
                     st.session_state["current_trip_id"] = trip['id']
                     st.rerun()
-                # Nur der Owner darf den kompletten Trip löschen
                 if trip['owner_id'] == user_id:
                     if st.button("Löschen ❌", key=f"del_{trip['id']}"):
                         conn = get_db()
@@ -198,18 +195,18 @@ def show_overview():
                             cur.execute('DELETE FROM itinerary WHERE trip_id = %s', (trip['id'],))
                             cur.execute('DELETE FROM trip_collaborators WHERE trip_id = %s', (trip['id'],))
                             conn.commit()
+                        conn.close()
                         st.rerun()
 
 # --- SEITE 2: DETAILANSICHT WITH COLLABORATORS ---
 def show_detail(trip_id):
     user_id = st.session_state["user_id"]
+    
     conn = get_db()
     with conn.cursor() as cur:
-        # 1. Trip holen
         cur.execute('SELECT * FROM trips WHERE id = %s', (trip_id,))
         trip = cur.fetchone()
         
-        # 2. Alle To-Dos und Packlisten-Items kombiniert laden (spart einen Datenbank-Abstecher)
         cur.execute('''
             SELECT t.*, u.username as helper 
             FROM todos t 
@@ -218,19 +215,16 @@ def show_detail(trip_id):
         ''', (trip_id,))
         all_todos = cur.fetchall()
         
-        # 3. Alle Ausgaben holen
         cur.execute('SELECT * FROM expenses WHERE trip_id = %s', (trip_id,))
         expenses = cur.fetchall()
         
-        # 4. Zeitplan holen
         cur.execute('SELECT * FROM itinerary WHERE trip_id = %s ORDER BY activity_date ASC, activity_time ASC', (trip_id,))
         itinerary_raw = cur.fetchall()
         
-        # 5. Collaborators holen
         cur.execute('SELECT u.username FROM trip_collaborators c JOIN users u ON c.user_id = u.id WHERE c.trip_id = %s', (trip_id,))
         collaborators = cur.fetchall()
+    conn.close()
 
-    # Aufteilung der geladenen To-Dos direkt in Python (das geht blitzschnell)
     todos = [t for t in all_todos if t['type'] == 'task']
     packing_list = [t for t in all_todos if t['type'] == 'pack' and t['user_id'] == user_id]
     
@@ -253,7 +247,6 @@ def show_detail(trip_id):
             st.write(f"- 👥 {colab['username']}")
             
     with c_invite:
-        # Nur der Owner kann Leute einladen
         if trip['owner_id'] == user_id:
             with st.form("invite_form"):
                 friend_name = st.text_input("Benutzername des Freundes")
@@ -277,6 +270,7 @@ def show_detail(trip_id):
                                     st.info("Dieser Nutzer ist bereits im Projekt.")
                         else:
                             st.error("Benutzername nicht gefunden. Dein Freund muss sich zuerst registrieren!")
+                    conn.close()
         else:
             st.info("Nur der Ersteller des Trips kann weitere Freunde einladen.")
 
@@ -297,6 +291,7 @@ def show_detail(trip_id):
                 cur.execute('INSERT INTO itinerary (trip_id, activity_date, activity_time, activity) VALUES (%s, %s, %s, %s)', 
                             (trip_id, str(a_date), str(a_time)[:5], a_text))
                 conn.commit()
+            conn.close()
             st.rerun()
             
     calendar_data = {}
@@ -320,6 +315,7 @@ def show_detail(trip_id):
                             with conn.cursor() as cur:
                                 cur.execute('DELETE FROM itinerary WHERE id = %s', (act['id'],))
                                 conn.commit()
+                            conn.close()
                             st.rerun()
     else:
         st.info("Noch keine Aktivitäten geplant.")
@@ -335,23 +331,22 @@ def show_detail(trip_id):
         if st.button("Hinzufügen", key="todo_btn") and todo_task:
             conn = get_db()
             with conn.cursor() as cur:
-                # Gemeinsame Aufgabe: user_id bleibt beim Erstellen leer oder unverknüpft für den Status
                 cur.execute('INSERT INTO todos (trip_id, task, type, done) VALUES (%s, %s, \'task\', 0)', (trip_id, todo_task))
                 conn.commit()
+            conn.close()
             st.rerun()
             
         for todo in todos:
-            # Info-Text, wer es erledigt hat
             status_text = f" (Erledigt von: {todo['helper']})" if todo['done'] and todo['helper'] else ""
             checked = st.checkbox(f"{todo['task']}{status_text}", value=bool(todo['done']), key=f"todo_{todo['id']}")
             
             if checked != bool(todo['done']):
                 conn = get_db()
                 with conn.cursor() as cur:
-                    # Wenn abgehakt, tragen wir die ID des aktuellen Users ein, sonst löschen wir sie wieder
                     new_user = user_id if checked else None
                     cur.execute('UPDATE todos SET done = %s, user_id = %s WHERE id = %s', (1 if checked else 0, new_user, todo['id']))
                     conn.commit()
+                conn.close()
                 st.rerun()
                 
     with col_pack:
@@ -360,9 +355,9 @@ def show_detail(trip_id):
         if st.button("Hinzufügen", key="pack_btn") and pack_task:
             conn = get_db()
             with conn.cursor() as cur:
-                # Hier verknüpfen wir das Item fest mit deiner user_id!
                 cur.execute('INSERT INTO todos (trip_id, task, type, user_id, done) VALUES (%s, %s, \'pack\', %s, 0)', (trip_id, pack_task, user_id))
                 conn.commit()
+            conn.close()
             st.rerun()
             
         for item in packing_list:
@@ -372,6 +367,7 @@ def show_detail(trip_id):
                 with conn.cursor() as cur:
                     cur.execute('UPDATE todos SET done = %s WHERE id = %s', (1 if checked else 0, item['id']))
                     conn.commit()
+                conn.close()
                 st.rerun()
 
     # 💰 AUSGABEN & 📌 NOTIZEN
@@ -385,7 +381,7 @@ def show_detail(trip_id):
             amount = st.number_input("Betrag (€)", min_value=0.0, step=0.01)
             category = st.selectbox("Kategorie", ["Transport", "Unterkunft", "Verpflegung", "Aktivitäten"])
             description = st.text_input("Notiz (z.B. Hostel Rom)")
-            submit_exp = st.form_submit_button("Eintrag保存")
+            submit_exp = st.form_submit_button("Eintrag speichern")
             
             if submit_exp and amount:
                 conn = get_db()
@@ -393,6 +389,7 @@ def show_detail(trip_id):
                     cur.execute('INSERT INTO expenses (trip_id, amount, category, description) VALUES (%s, %s, %s, %s)', 
                                 (trip_id, amount, category, description))
                     conn.commit()
+                conn.close()
                 st.rerun()
                 
         for exp in expenses:
@@ -403,6 +400,7 @@ def show_detail(trip_id):
                     with conn.cursor() as cur:
                         cur.execute('DELETE FROM expenses WHERE id = %s', (exp['id'],))
                         conn.commit()
+                    conn.close()
                     st.rerun()
 
     with col_notes:
@@ -413,6 +411,7 @@ def show_detail(trip_id):
             with conn.cursor() as cur:
                 cur.execute('UPDATE trips SET notes = %s WHERE id = %s', (notes_text, trip_id))
                 conn.commit()
+            conn.close()
             st.success("Notizen aktualisiert!")
 
 # --- ROUTING LOGIK ---
