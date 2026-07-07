@@ -337,7 +337,6 @@ def show_detail(trip_id):
     
 # 📝 TO-DOS & 🎒 PACKLISTE
     col_todo, col_pack = st.columns(2)
-        
     
     with col_todo:
         st.header("📝 Gemeinsame To-Dos")
