@@ -25,7 +25,7 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS todos 
                        (id SERIAL PRIMARY KEY, trip_id INTEGER, task TEXT, done INTEGER DEFAULT 0, type TEXT DEFAULT 'task')''')
         cur.execute('''CREATE TABLE IF NOT EXISTS expenses 
-                       (id SERIAL PRIMARY KEY, trip_id INTEGER, amount REAL, category TEXT, description TEXT)''')
+                       (id SERIAL PRIMARY KEY, trip_id INTEGER, amount REAL, category TEXT, description TEXT, user_id INTEGER, split_mode TEXT DEFAULT 'alleine')''')
         cur.execute('''CREATE TABLE IF NOT EXISTS itinerary 
                        (id SERIAL PRIMARY KEY, trip_id INTEGER, activity_date TEXT, activity_time TEXT, activity TEXT)''')
         conn.commit()
@@ -94,7 +94,7 @@ def show_login():
                         st.error("Dieser Benutzername ist leider schon vergeben.")
                 conn.close()
 
-# --- SEITE 1: ÜBERSICHT (GEFILTERT NACH USER) ---
+# --- SEITE 1: ÜBERSICHT WITH ANTEILIGEM FINANZ-DASHBOARD ---
 def show_overview():
     st.title(f"🌍 Urlaubsplaner von {st.session_state['username']}")
     user_id = st.session_state["user_id"]
@@ -111,24 +111,48 @@ def show_overview():
         
         visible_trip_ids = [t['id'] for t in trips_raw]
         if visible_trip_ids:
-            cur.execute('SELECT amount, category FROM expenses WHERE trip_id = ANY(%s)', (visible_trip_ids,))
+            # Holt alle Ausgaben der Trips inklusive Informationen zur Anzahl der Teilnehmer pro Trip
+            cur.execute('''
+                SELECT e.*, 
+                       (SELECT COUNT(*) + 1 FROM trip_collaborators WHERE trip_id = e.trip_id) as total_members
+                FROM expenses e 
+                WHERE e.trip_id = ANY(%s)
+            ''', (visible_trip_ids,))
             all_expenses = cur.fetchall()
         else:
             all_expenses = []
     conn.close()
     
-    total_all_trips = sum(exp['amount'] for exp in all_expenses)
+    # Berechnungen für dein persönliches, anteiliges Finanz-Dashboard
+    total_all_trips = 0.0
     category_totals = {'Transport': 0.0, 'Unterkunft': 0.0, 'Verpflegung': 0.0, 'Aktivitäten': 0.0}
+    
     for exp in all_expenses:
+        # Ermitteln, wie viel DU von dieser Ausgabe bezahlst
+        amt = exp['amount']
+        mode = exp['split_mode']
+        is_buyer = (exp['user_id'] == user_id)
+        members_count = exp['total_members'] or 1
+        
+        personal_share = 0.0
+        if mode == 'alleine' and is_buyer:
+            personal_share = amt
+        elif mode == 'geteilt':
+            personal_share = amt / members_count
+        elif mode == 'kreditkarte':
+            # Bei gemeinsamer Kreditkarte zahlt rechnerisch jeder zu gleichen Teilen
+            personal_share = amt / members_count
+            
+        total_all_trips += personal_share
         cat = exp['category']
         if cat in category_totals:
-            category_totals[cat] += exp['amount']
+            category_totals[cat] += personal_share
 
     # 💰 FINANZ-DASHBOARD
-    st.header("💰 Mein Finanz-Dashboard")
+    st.header("💰 Mein Finanz-Dashboard (Deine anteiligen Kosten)")
     col_total, col_cats = st.columns([1, 2])
     with col_total:
-        st.metric(label="Gesamtausgaben deiner Trips", value=f"{total_all_trips:.2f} €")
+        st.metric(label="Deine Gesamtausgaben", value=f"{total_all_trips:.2f} €")
     with col_cats:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("✈️ Transport", f"{category_totals['Transport']:.2f} €")
@@ -198,7 +222,7 @@ def show_overview():
                         conn.close()
                         st.rerun()
 
-# --- SEITE 2: DETAILANSICHT WITH COLLABORATORS ---
+# --- SEITE 2: DETAILANSICHT WITH SMART EXPENSES ---
 def show_detail(trip_id):
     user_id = st.session_state["user_id"]
     
@@ -215,7 +239,13 @@ def show_detail(trip_id):
         ''', (trip_id,))
         all_todos = cur.fetchall()
         
-        cur.execute('SELECT * FROM expenses WHERE trip_id = %s', (trip_id,))
+        # Holt alle Ausgaben mit dem Klarnamen des Käufers
+        cur.execute('''
+            SELECT e.*, u.username as buyer 
+            FROM expenses e 
+            LEFT JOIN users u ON e.user_id = u.id 
+            WHERE e.trip_id = %s
+        ''', (trip_id,))
         expenses = cur.fetchall()
         
         cur.execute('SELECT * FROM itinerary WHERE trip_id = %s ORDER BY activity_date ASC, activity_time ASC', (trip_id,))
@@ -227,6 +257,9 @@ def show_detail(trip_id):
 
     todos = [t for t in all_todos if t['type'] == 'task']
     packing_list = [t for t in all_todos if t['type'] == 'pack' and t['user_id'] == user_id]
+    
+    # Gesamtanzahl aller dem Trip zugeordneten Personen (Besitzer + Collaborators)
+    total_trip_members = len(collaborators) + 1
     
     if st.button("← Zurück zur Übersicht"):
         st.session_state["current_trip_id"] = None
@@ -370,31 +403,65 @@ def show_detail(trip_id):
                 conn.close()
                 st.rerun()
 
-    # 💰 AUSGABEN & 📌 NOTIZEN
+    st.markdown("---")
+
+    # 💰 AUSGABEN WITH SMART SPLIT
     col_exp, col_notes = st.columns(2)
     with col_exp:
         st.header("💰 Ausgaben-Tracker")
         total_expenses = sum(exp['amount'] for exp in expenses)
-        st.subheader(f"Gesamtausgaben bisher: :red[{total_expenses:.2f} €]")
+        st.subheader(f"Gesamtkosten des Trips: :red[{total_expenses:.2f} €]")
         
         with st.form("add_expense_form"):
             amount = st.number_input("Betrag (€)", min_value=0.0, step=0.01)
             category = st.selectbox("Kategorie", ["Transport", "Unterkunft", "Verpflegung", "Aktivitäten"])
             description = st.text_input("Notiz (z.B. Hostel Rom)")
+            
+            # Neue Option für die Abrechnungsmethode
+            split_mode = st.selectbox(
+                "Wie soll abgerechnet werden?", 
+                [
+                    f"Gleichmäßig teilen (durch {total_trip_members} Personen)", 
+                    "Komplett alleine übernehmen", 
+                    "Gemeinsame Kreditkarte (wird am Ende geteilt)"
+                ]
+            )
             submit_exp = st.form_submit_button("Eintrag speichern")
             
             if submit_exp and amount:
+                # Mapping der deutschen Formularoptionen auf die Datenbank-Keys
+                mode_key = 'geteilt'
+                if "alleine" in split_mode:
+                    mode_key = 'alleine'
+                elif "Kreditkarte" in split_mode:
+                    mode_key = 'kreditkarte'
+                
                 conn = get_db()
                 with conn.cursor() as cur:
-                    cur.execute('INSERT INTO expenses (trip_id, amount, category, description) VALUES (%s, %s, %s, %s)', 
-                                (trip_id, amount, category, description))
+                    cur.execute('''
+                        INSERT INTO expenses (trip_id, amount, category, description, user_id, split_mode) 
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    ''', (trip_id, amount, category, description, user_id, mode_key))
                     conn.commit()
                 conn.close()
                 st.rerun()
                 
         for exp in expenses:
-            with st.container():
-                st.write(f"**{exp['amount']:.2f} €** | *{exp['category']}* | {exp['description']}")
+            # Schönere Textanzeige für den Modus bauen
+            if exp['split_mode'] == 'alleine':
+                split_text = "🔒 Nur für sich"
+            elif exp['split_mode'] == 'kreditkarte':
+                split_text = "💳 Gemeinsame Karte"
+            else:
+                split_text = f"👥 Geteilt durch {total_trip_members}"
+                
+            buyer_name = exp['buyer'] if exp['buyer'] else "Unbekannt"
+            
+            with st.container(border=True):
+                st.write(f"**{exp['amount']:.2f} €** | *{exp['category']}*")
+                st.write(f"📝 {exp['description']}")
+                st.write(f"👤 Bezahlt von: **{buyer_name}** | Mode: *{split_text}*")
+                
                 if st.button("Ausgabe löschen ❌", key=f"del_exp_{exp['id']}"):
                     conn = get_db()
                     with conn.cursor() as cur:
