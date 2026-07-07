@@ -7,7 +7,8 @@ import bcrypt
 # Seiteneinstellungen
 st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
 
-# 1. Datenbank-Verbindung (Sicher über Streamlit Secrets)
+# Sorgt dafür, dass die Verbindung im Speicher bleibt und nicht jedes Mal neu erstellt wird
+@st.cache_resource
 def get_db():
     return psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
 
@@ -209,20 +210,35 @@ def show_detail(trip_id):
     user_id = st.session_state["user_id"]
     conn = get_db()
     with conn.cursor() as cur:
+        # 1. Trip holen
         cur.execute('SELECT * FROM trips WHERE id = %s', (trip_id,))
         trip = cur.fetchone()
-        cur.execute('SELECT * FROM todos WHERE trip_id = %s AND type = \'task\'', (trip_id,))
-        todos = cur.fetchall()
-        cur.execute('SELECT * FROM todos WHERE trip_id = %s AND type = \'pack\'', (trip_id,))
-        packing_list = cur.fetchall()
+        
+        # 2. Alle To-Dos und Packlisten-Items kombiniert laden (spart einen Datenbank-Abstecher)
+        cur.execute('''
+            SELECT t.*, u.username as helper 
+            FROM todos t 
+            LEFT JOIN users u ON t.user_id = u.id 
+            WHERE t.trip_id = %s
+        ''', (trip_id,))
+        all_todos = cur.fetchall()
+        
+        # 3. Alle Ausgaben holen
         cur.execute('SELECT * FROM expenses WHERE trip_id = %s', (trip_id,))
         expenses = cur.fetchall()
+        
+        # 4. Zeitplan holen
         cur.execute('SELECT * FROM itinerary WHERE trip_id = %s ORDER BY activity_date ASC, activity_time ASC', (trip_id,))
         itinerary_raw = cur.fetchall()
-        # Aktuelle Collaborators holen
+        
+        # 5. Collaborators holen
         cur.execute('SELECT u.username FROM trip_collaborators c JOIN users u ON c.user_id = u.id WHERE c.trip_id = %s', (trip_id,))
         collaborators = cur.fetchall()
     conn.close()
+
+    # Aufteilung der geladenen To-Dos direkt in Python (das geht blitzschnell)
+    todos = [t for t in all_todos if t['type'] == 'task']
+    packing_list = [t for t in all_todos if t['type'] == 'pack' and t['user_id'] == user_id]
     
     if st.button("← Zurück zur Übersicht"):
         st.session_state["current_trip_id"] = None
@@ -321,23 +337,7 @@ def show_detail(trip_id):
     
 # 📝 TO-DOS & 🎒 PACKLISTE
     col_todo, col_pack = st.columns(2)
-    
-    # Datenbank neu abfragen, um die user_id bei den Todos zu haben
-    conn = get_db()
-    with conn.cursor() as cur:
-        # Echte To-Dos: Alle sehen alle Aufgaben für diesen Trip
-        cur.execute('''
-            SELECT t.*, u.username as helper 
-            FROM todos t 
-            LEFT JOIN users u ON t.user_id = u.id 
-            WHERE t.trip_id = %s AND t.type = 'task'
-        ''', (trip_id,))
-        todos = cur.fetchall()
         
-        # Packliste: Man sieht NUR die eigenen Sachen, die man selbst erstellt hat
-        cur.execute('SELECT * FROM todos WHERE trip_id = %s AND type = \'pack\' AND user_id = %s', (trip_id, user_id))
-        packing_list = cur.fetchall()
-    conn.close()
     
     with col_todo:
         st.header("📝 Gemeinsame To-Dos")
