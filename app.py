@@ -12,6 +12,7 @@ st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
 def get_db():
     conn = psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
     return conn
+
 # 2. Initialisierung der Tabellen
 def init_db():
     conn = get_db()
@@ -30,7 +31,6 @@ def init_db():
         cur.execute('''CREATE TABLE IF NOT EXISTS itinerary 
                        (id SERIAL PRIMARY KEY, trip_id INTEGER, activity_date TEXT, activity_time TEXT, activity TEXT)''')
         conn.commit()
-    conn.close()
 
 init_db()
 
@@ -73,7 +73,6 @@ def show_login():
                             st.error("Falscher Benutzername oder Passwort!")
                     else:
                         st.error("Falscher Benutzername oder Passwort!")
-                conn.close()
                 
     with tab2:
         with st.form("register_form"):
@@ -95,7 +94,6 @@ def show_login():
                         st.success("Konto erfolgreich erstellt! Du kannst dich jetzt einloggen.")
                     except Exception as e:
                         st.error("Dieser Benutzername ist leider schon vergeben.")
-                conn.close()
 
 # --- SEITE 1: ÜBERSICHT (GEFILTERT NACH USER) ---
 def show_overview():
@@ -120,7 +118,6 @@ def show_overview():
             all_expenses = cur.fetchall()
         else:
             all_expenses = []
-    conn.close()
     
     # Berechnungen für das Finanz-Dashboard
     total_all_trips = sum(exp['amount'] for exp in all_expenses)
@@ -160,7 +157,6 @@ def show_overview():
                     cur.execute('INSERT INTO trips (title, destination, start_date, end_date, status, owner_id) VALUES (%s, %s, %s, %s, %s, %s)', 
                                 (title, destination, str(start_date), str(end_date), status, user_id))
                     conn.commit()
-                conn.close()
                 st.success("Trip gespeichert!")
                 st.rerun()
 
@@ -202,7 +198,6 @@ def show_overview():
                             cur.execute('DELETE FROM itinerary WHERE trip_id = %s', (trip['id'],))
                             cur.execute('DELETE FROM trip_collaborators WHERE trip_id = %s', (trip['id'],))
                             conn.commit()
-                        conn.close()
                         st.rerun()
 
 # --- SEITE 2: DETAILANSICHT WITH COLLABORATORS ---
@@ -234,7 +229,6 @@ def show_detail(trip_id):
         # 5. Collaborators holen
         cur.execute('SELECT u.username FROM trip_collaborators c JOIN users u ON c.user_id = u.id WHERE c.trip_id = %s', (trip_id,))
         collaborators = cur.fetchall()
-    conn.close()
 
     # Aufteilung der geladenen To-Dos direkt in Python (das geht blitzschnell)
     todos = [t for t in all_todos if t['type'] == 'task']
@@ -283,7 +277,6 @@ def show_detail(trip_id):
                                     st.info("Dieser Nutzer ist bereits im Projekt.")
                         else:
                             st.error("Benutzername nicht gefunden. Dein Freund muss sich zuerst registrieren!")
-                    conn.close()
         else:
             st.info("Nur der Ersteller des Trips kann weitere Freunde einladen.")
 
@@ -304,7 +297,6 @@ def show_detail(trip_id):
                 cur.execute('INSERT INTO itinerary (trip_id, activity_date, activity_time, activity) VALUES (%s, %s, %s, %s)', 
                             (trip_id, str(a_date), str(a_time)[:5], a_text))
                 conn.commit()
-            conn.close()
             st.rerun()
             
     calendar_data = {}
@@ -328,14 +320,13 @@ def show_detail(trip_id):
                             with conn.cursor() as cur:
                                 cur.execute('DELETE FROM itinerary WHERE id = %s', (act['id'],))
                                 conn.commit()
-                            conn.close()
                             st.rerun()
     else:
         st.info("Noch keine Aktivitäten geplant.")
         
     st.markdown("---")
     
-# 📝 TO-DOS & 🎒 PACKLISTE
+    # 📝 TO-DOS & 🎒 PACKLISTE
     col_todo, col_pack = st.columns(2)
     
     with col_todo:
@@ -347,7 +338,6 @@ def show_detail(trip_id):
                 # Gemeinsame Aufgabe: user_id bleibt beim Erstellen leer oder unverknüpft für den Status
                 cur.execute('INSERT INTO todos (trip_id, task, type, done) VALUES (%s, %s, \'task\', 0)', (trip_id, todo_task))
                 conn.commit()
-            conn.close()
             st.rerun()
             
         for todo in todos:
@@ -362,7 +352,6 @@ def show_detail(trip_id):
                     new_user = user_id if checked else None
                     cur.execute('UPDATE todos SET done = %s, user_id = %s WHERE id = %s', (1 if checked else 0, new_user, todo['id']))
                     conn.commit()
-                conn.close()
                 st.rerun()
                 
     with col_pack:
@@ -374,7 +363,6 @@ def show_detail(trip_id):
                 # Hier verknüpfen wir das Item fest mit deiner user_id!
                 cur.execute('INSERT INTO todos (trip_id, task, type, user_id, done) VALUES (%s, %s, \'pack\', %s, 0)', (trip_id, pack_task, user_id))
                 conn.commit()
-            conn.close()
             st.rerun()
             
         for item in packing_list:
@@ -384,7 +372,6 @@ def show_detail(trip_id):
                 with conn.cursor() as cur:
                     cur.execute('UPDATE todos SET done = %s WHERE id = %s', (1 if checked else 0, item['id']))
                     conn.commit()
-                conn.close()
                 st.rerun()
 
     # 💰 AUSGABEN & 📌 NOTIZEN
@@ -398,7 +385,7 @@ def show_detail(trip_id):
             amount = st.number_input("Betrag (€)", min_value=0.0, step=0.01)
             category = st.selectbox("Kategorie", ["Transport", "Unterkunft", "Verpflegung", "Aktivitäten"])
             description = st.text_input("Notiz (z.B. Hostel Rom)")
-            submit_exp = st.form_submit_button("Eintrag speichern")
+            submit_exp = st.form_submit_button("Eintrag保存")
             
             if submit_exp and amount:
                 conn = get_db()
@@ -406,7 +393,6 @@ def show_detail(trip_id):
                     cur.execute('INSERT INTO expenses (trip_id, amount, category, description) VALUES (%s, %s, %s, %s)', 
                                 (trip_id, amount, category, description))
                     conn.commit()
-                conn.close()
                 st.rerun()
                 
         for exp in expenses:
@@ -417,7 +403,6 @@ def show_detail(trip_id):
                     with conn.cursor() as cur:
                         cur.execute('DELETE FROM expenses WHERE id = %s', (exp['id'],))
                         conn.commit()
-                    conn.close()
                     st.rerun()
 
     with col_notes:
@@ -428,7 +413,6 @@ def show_detail(trip_id):
             with conn.cursor() as cur:
                 cur.execute('UPDATE trips SET notes = %s WHERE id = %s', (notes_text, trip_id))
                 conn.commit()
-            conn.close()
             st.success("Notizen aktualisiert!")
 
 # --- ROUTING LOGIK ---
