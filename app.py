@@ -307,36 +307,61 @@ def show_detail(trip_id):
         
     st.markdown("---")
     
-    # 📝 TO-DOS & 🎒 PACKLISTE
+# 📝 TO-DOS & 🎒 PACKLISTE
     col_todo, col_pack = st.columns(2)
+    
+    # Datenbank neu abfragen, um die user_id bei den Todos zu haben
+    conn = get_db()
+    with conn.cursor() as cur:
+        # Echte To-Dos: Alle sehen alle Aufgaben für diesen Trip
+        cur.execute('''
+            SELECT t.*, u.username as helper 
+            FROM todos t 
+            LEFT JOIN users u ON t.user_id = u.id 
+            WHERE t.trip_id = %s AND t.type = 'task'
+        ''', (trip_id,))
+        todos = cur.fetchall()
+        
+        # Packliste: Man sieht NUR die eigenen Sachen, die man selbst erstellt hat
+        cur.execute('SELECT * FROM todos WHERE trip_id = %s AND type = \'pack\' AND user_id = %s', (trip_id, user_id))
+        packing_list = cur.fetchall()
+    conn.close()
+    
     with col_todo:
-        st.header("📝 Vorbereitung & To-Dos")
+        st.header("📝 Gemeinsame To-Dos")
         todo_task = st.text_input("Neues To-Do", key="todo_input")
         if st.button("Hinzufügen", key="todo_btn") and todo_task:
             conn = get_db()
             with conn.cursor() as cur:
-                cur.execute('INSERT INTO todos (trip_id, task, type) VALUES (%s, %s, \'task\')', (trip_id, todo_task))
+                # Gemeinsame Aufgabe: user_id bleibt beim Erstellen leer oder unverknüpft für den Status
+                cur.execute('INSERT INTO todos (trip_id, task, type, done) VALUES (%s, %s, \'task\', 0)', (trip_id, todo_task))
                 conn.commit()
             conn.close()
             st.rerun()
             
         for todo in todos:
-            checked = st.checkbox(todo['task'], value=bool(todo['done']), key=f"todo_{todo['id']}")
+            # Info-Text, wer es erledigt hat
+            status_text = f" (Erledigt von: {todo['helper']})" if todo['done'] and todo['helper'] else ""
+            checked = st.checkbox(f"{todo['task']}{status_text}", value=bool(todo['done']), key=f"todo_{todo['id']}")
+            
             if checked != bool(todo['done']):
                 conn = get_db()
                 with conn.cursor() as cur:
-                    cur.execute('UPDATE todos SET done = %s WHERE id = %s', (1 if checked else 0, todo['id']))
+                    # Wenn abgehakt, tragen wir die ID des aktuellen Users ein, sonst löschen wir sie wieder
+                    new_user = user_id if checked else None
+                    cur.execute('UPDATE todos SET done = %s, user_id = %s WHERE id = %s', (1 if checked else 0, new_user, todo['id']))
                     conn.commit()
                 conn.close()
                 st.rerun()
                 
     with col_pack:
-        st.header("🎒 Packliste")
+        st.header("🎒 Meine persönliche Packliste")
         pack_task = st.text_input("Neues Packlisten-Item", key="pack_input")
         if st.button("Hinzufügen", key="pack_btn") and pack_task:
             conn = get_db()
             with conn.cursor() as cur:
-                cur.execute('INSERT INTO todos (trip_id, task, type) VALUES (%s, %s, \'pack\')', (trip_id, pack_task))
+                # Hier verknüpfen wir das Item fest mit deiner user_id!
+                cur.execute('INSERT INTO todos (trip_id, task, type, user_id, done) VALUES (%s, %s, \'pack\', %s, 0)', (trip_id, pack_task, user_id))
                 conn.commit()
             conn.close()
             st.rerun()
@@ -350,8 +375,6 @@ def show_detail(trip_id):
                     conn.commit()
                 conn.close()
                 st.rerun()
-
-    st.markdown("---")
 
     # 💰 AUSGABEN & 📌 NOTIZEN
     col_exp, col_notes = st.columns(2)
