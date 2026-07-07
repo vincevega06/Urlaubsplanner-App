@@ -7,11 +7,11 @@ import bcrypt
 # Seiteneinstellungen
 st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
 
-# Sorgt dafür, dass die Verbindung im Speicher bleibt und nicht jedes Mal neu erstellt wird
-@st.cache_resource
+# ttl=3600 sorgt dafür, dass die Verbindung nach spätestens einer Stunde erneuert wird
+@st.cache_resource(ttl=3600)
 def get_db():
-    return psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
-
+    conn = psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
+    return conn
 # 2. Initialisierung der Tabellen
 def init_db():
     conn = get_db()
