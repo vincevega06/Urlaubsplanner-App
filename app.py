@@ -2,6 +2,7 @@ import streamlit as st
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import bcrypt
 
 # Seiteneinstellungen
 st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
@@ -52,17 +53,23 @@ def show_login():
             password = st.text_input("Passwort", type="password")
             submit = st.form_submit_button("Einloggen")
             
-            if submit:
+            if submit and username and password:
                 conn = get_db()
                 with conn.cursor() as cur:
                     cur.execute("SELECT id, password FROM users WHERE username = %s", (username,))
                     user = cur.fetchone()
-                    if user and user['password'] == password:
-                        st.session_state["logged_in"] = True
-                        st.session_state["user_id"] = user['id']
-                        st.session_state["username"] = username
-                        st.success("Erfolgreich eingeloggt!")
-                        st.rerun()
+                    
+                    if user:
+                        # Hier prüfen wir das Klartext-Passwort gegen den Hash aus der Datenbank
+                        stored_password_hash = user['password'].encode('utf-8')
+                        if bcrypt.checkpw(password.encode('utf-8'), stored_password_hash):
+                            st.session_state["logged_in"] = True
+                            st.session_state["user_id"] = user['id']
+                            st.session_state["username"] = username
+                            st.success("Erfolgreich eingeloggt!")
+                            st.rerun()
+                        else:
+                            st.error("Falscher Benutzername oder Passwort!")
                     else:
                         st.error("Falscher Benutzername oder Passwort!")
                 conn.close()
@@ -74,13 +81,18 @@ def show_login():
             submit_reg = st.form_submit_button("Konto erstellen")
             
             if submit_reg and new_username and new_password:
+                # Passwort salzen und hashen (Verschlüsseln)
+                salt = bcrypt.gensalt()
+                hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), salt).decode('utf-8')
+                
                 conn = get_db()
                 with conn.cursor() as cur:
                     try:
-                        cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (new_username, new_password))
+                        # Wir speichern nur noch den unlesbaren Hash!
+                        cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (new_username, hashed_password))
                         conn.commit()
                         st.success("Konto erfolgreich erstellt! Du kannst dich jetzt einloggen.")
-                    except:
+                    except Exception as e:
                         st.error("Dieser Benutzername ist leider schon vergeben.")
                 conn.close()
 
