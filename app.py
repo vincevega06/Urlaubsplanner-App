@@ -4,19 +4,23 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Seiteneinstellungen
-st.set_page_config(page_title="Mein Urlaubsplaner 🌍", layout="wide")
+st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
 
 # 1. Datenbank-Verbindung (Sicher über Streamlit Secrets)
 def get_db():
     return psycopg2.connect(st.secrets["DATABASE_URL"], cursor_factory=RealDictCursor)
 
-# 2. Initialisierung der Tabellen (falls nötig)
+# 2. Initialisierung der Tabellen
 def init_db():
     conn = get_db()
     with conn.cursor() as cur:
+        cur.execute('''CREATE TABLE IF NOT EXISTS users 
+                       (id SERIAL PRIMARY KEY, username TEXT UNIQUE, password TEXT)''')
         cur.execute('''CREATE TABLE IF NOT EXISTS trips 
                        (id SERIAL PRIMARY KEY, title TEXT, destination TEXT, 
-                        start_date TEXT, end_date TEXT, status TEXT, notes TEXT DEFAULT '')''')
+                        start_date TEXT, end_date TEXT, status TEXT, notes TEXT DEFAULT '', owner_id INTEGER)''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS trip_collaborators 
+                       (trip_id INTEGER, user_id INTEGER, PRIMARY KEY (trip_id, user_id))''')
         cur.execute('''CREATE TABLE IF NOT EXISTS todos 
                        (id SERIAL PRIMARY KEY, trip_id INTEGER, task TEXT, done INTEGER DEFAULT 0, type TEXT DEFAULT 'task')''')
         cur.execute('''CREATE TABLE IF NOT EXISTS expenses 
@@ -28,21 +32,81 @@ def init_db():
 
 init_db()
 
-# Session State für die Navigation initialisieren
+# Session States initialisieren
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["user_id"] = None
+    st.session_state["username"] = ""
 if "current_trip_id" not in st.session_state:
     st.session_state["current_trip_id"] = None
 
-# --- SEITE 1: ÜBERSICHT ---
-def show_overview():
-    st.title("Mein Urlaubsplaner 🌍")
+# --- DYNAMISCHES LOGIN & REGISTRIERUNGS-FENSTER ---
+def show_login():
+    st.title("🔒 Unser Urlaubsplaner")
     
-    # Daten abrufen
+    tab1, tab2 = st.tabs(["🔑 Einloggen", "📝 Registrieren"])
+    
+    with tab1:
+        with st.form("login_form"):
+            username = st.text_input("Benutzername")
+            password = st.text_input("Passwort", type="password")
+            submit = st.form_submit_button("Einloggen")
+            
+            if submit:
+                conn = get_db()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id, password FROM users WHERE username = %s", (username,))
+                    user = cur.fetchone()
+                    if user and user['password'] == password:
+                        st.session_state["logged_in"] = True
+                        st.session_state["user_id"] = user['id']
+                        st.session_state["username"] = username
+                        st.success("Erfolgreich eingeloggt!")
+                        st.rerun()
+                    else:
+                        st.error("Falscher Benutzername oder Passwort!")
+                conn.close()
+                
+    with tab2:
+        with st.form("register_form"):
+            new_username = st.text_input("Wunsch-Benutzername")
+            new_password = st.text_input("Passwort wählen", type="password")
+            submit_reg = st.form_submit_button("Konto erstellen")
+            
+            if submit_reg and new_username and new_password:
+                conn = get_db()
+                with conn.cursor() as cur:
+                    try:
+                        cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (new_username, new_password))
+                        conn.commit()
+                        st.success("Konto erfolgreich erstellt! Du kannst dich jetzt einloggen.")
+                    except:
+                        st.error("Dieser Benutzername ist leider schon vergeben.")
+                conn.close()
+
+# --- SEITE 1: ÜBERSICHT (GEFILTERT NACH USER) ---
+def show_overview():
+    st.title(f"🌍 Urlaubsplaner von {st.session_state['username']}")
+    user_id = st.session_state["user_id"]
+    
+    # Daten abrufen (Nur eigene Trips ODER Trips wo man Collaborator ist)
     conn = get_db()
     with conn.cursor() as cur:
-        cur.execute('SELECT * FROM trips')
+        cur.execute('''
+            SELECT t.* FROM trips t
+            LEFT JOIN trip_collaborators c ON t.id = c.trip_id
+            WHERE t.owner_id = %s OR c.user_id = %s
+            GROUP BY t.id
+        ''', (user_id, user_id))
         trips_raw = cur.fetchall()
-        cur.execute('SELECT amount, category FROM expenses')
-        all_expenses = cur.fetchall()
+        
+        # Finanzen nur für die sichtbaren Trips berechnen
+        visible_trip_ids = [t['id'] for t in trips_raw]
+        if visible_trip_ids:
+            cur.execute('SELECT amount, category FROM expenses WHERE trip_id = ANY(%s)', (visible_trip_ids,))
+            all_expenses = cur.fetchall()
+        else:
+            all_expenses = []
     conn.close()
     
     # Berechnungen für das Finanz-Dashboard
@@ -50,18 +114,14 @@ def show_overview():
     category_totals = {'Transport': 0.0, 'Unterkunft': 0.0, 'Verpflegung': 0.0, 'Aktivitäten': 0.0}
     for exp in all_expenses:
         cat = exp['category']
-        if cat == 'Essen': cat = 'Verpflegung'  # Konsistenz-Fix
-        if cat == 'Freizeit': cat = 'Aktivitäten'
         if cat in category_totals:
             category_totals[cat] += exp['amount']
 
     # 💰 FINANZ-DASHBOARD
-    st.header("💰 Finanz-Dashboard")
+    st.header("💰 Mein Finanz-Dashboard")
     col_total, col_cats = st.columns([1, 2])
-    
     with col_total:
-        st.metric(label="Gesamtausgaben aller Trips", value=f"{total_all_trips:.2f} €")
-        
+        st.metric(label="Gesamtausgaben deiner Trips", value=f"{total_all_trips:.2f} €")
     with col_cats:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("✈️ Transport", f"{category_totals['Transport']:.2f} €")
@@ -71,7 +131,7 @@ def show_overview():
         
     st.markdown("---")
     
-    # ➕ NEUEN TRIP PLANEN
+    # ➕ NEUEN TRIP PLANEN (Man wird automatisch Owner)
     with st.expander("➕ Neuen Trip planen"):
         with st.form("add_trip_form"):
             title = st.text_input("Titel (z.B. Roadtrip durch Italien)")
@@ -84,19 +144,18 @@ def show_overview():
             if submit and title and destination:
                 conn = get_db()
                 with conn.cursor() as cur:
-                    cur.execute('INSERT INTO trips (title, destination, start_date, end_date, status) VALUES (%s, %s, %s, %s, %s)', 
-                                (title, destination, str(start_date), str(end_date), status))
+                    cur.execute('INSERT INTO trips (title, destination, start_date, end_date, status, owner_id) VALUES (%s, %s, %s, %s, %s, %s)', 
+                                (title, destination, str(start_date), str(end_date), status, user_id))
                     conn.commit()
                 conn.close()
                 st.success("Trip gespeichert!")
                 st.rerun()
 
     # 🗺️ GEPLANTE TRIPS ANZEIGEN
-    st.header("Geplante Trips")
+    st.header("Meine Urlaube")
     today = datetime.now().date()
     
     for trip in trips_raw:
-        # Countdown berechnen
         try:
             s_date = datetime.strptime(trip['start_date'], '%Y-%m-%d').date()
             e_date = datetime.strptime(trip['end_date'], '%Y-%m-%d').date()
@@ -109,31 +168,33 @@ def show_overview():
         except:
             countdown = "Kein Datum"
             
-        # Karte als Box darstellen
         with st.container(border=True):
             c_left, c_right = st.columns([4, 1])
             with c_left:
-                st.subheader(f"{trip['title']} ({trip['status']})")
+                role = "👑 Ersteller" if trip['owner_id'] == user_id else "👥 Eingeladen"
+                st.subheader(f"{trip['title']} ({trip['status']}) - *{role}*")
                 st.write(f"📍 {trip['destination']} | 📅 {trip['start_date']} bis {trip['end_date']} | **{countdown}**")
             with c_right:
-                # Button zum Öffnen der Details
                 if st.button("Details öffnen 📂", key=f"open_{trip['id']}"):
                     st.session_state["current_trip_id"] = trip['id']
                     st.rerun()
-                # Button zum Löschen
-                if st.button("Löschen ❌", key=f"del_{trip['id']}"):
-                    conn = get_db()
-                    with conn.cursor() as cur:
-                        cur.execute('DELETE FROM trips WHERE id = %s', (trip['id'],))
-                        cur.execute('DELETE FROM todos WHERE trip_id = %s', (trip['id'],))
-                        cur.execute('DELETE FROM expenses WHERE trip_id = %s', (trip['id'],))
-                        cur.execute('DELETE FROM itinerary WHERE trip_id = %s', (trip['id'],))
-                        conn.commit()
-                    conn.close()
-                    st.rerun()
+                # Nur der Owner darf den kompletten Trip löschen
+                if trip['owner_id'] == user_id:
+                    if st.button("Löschen ❌", key=f"del_{trip['id']}"):
+                        conn = get_db()
+                        with conn.cursor() as cur:
+                            cur.execute('DELETE FROM trips WHERE id = %s', (trip['id'],))
+                            cur.execute('DELETE FROM todos WHERE trip_id = %s', (trip['id'],))
+                            cur.execute('DELETE FROM expenses WHERE trip_id = %s', (trip['id'],))
+                            cur.execute('DELETE FROM itinerary WHERE trip_id = %s', (trip['id'],))
+                            cur.execute('DELETE FROM trip_collaborators WHERE trip_id = %s', (trip['id'],))
+                            conn.commit()
+                        conn.close()
+                        st.rerun()
 
-# --- SEITE 2: DETAILANSICHT ---
+# --- SEITE 2: DETAILANSICHT WITH COLLABORATORS ---
 def show_detail(trip_id):
+    user_id = st.session_state["user_id"]
     conn = get_db()
     with conn.cursor() as cur:
         cur.execute('SELECT * FROM trips WHERE id = %s', (trip_id,))
@@ -146,15 +207,11 @@ def show_detail(trip_id):
         expenses = cur.fetchall()
         cur.execute('SELECT * FROM itinerary WHERE trip_id = %s ORDER BY activity_date ASC, activity_time ASC', (trip_id,))
         itinerary_raw = cur.fetchall()
+        # Aktuelle Collaborators holen
+        cur.execute('SELECT u.username FROM trip_collaborators c JOIN users u ON c.user_id = u.id WHERE c.trip_id = %s', (trip_id,))
+        collaborators = cur.fetchall()
     conn.close()
     
-    if not trip:
-        st.error("Trip nicht gefunden!")
-        if st.button("Zurück"):
-            st.session_state["current_trip_id"] = None
-            st.rerun()
-        return
-
     if st.button("← Zurück zur Übersicht"):
         st.session_state["current_trip_id"] = None
         st.rerun()
@@ -162,8 +219,50 @@ def show_detail(trip_id):
     st.title(trip['title'])
     st.write(f"📍 **Ziel:** {trip['destination']} | 📅 {trip['start_date']} bis {trip['end_date']}")
     
+    # 👥 COLLABORATOR MANAGEMENT
+    st.markdown("---")
+    st.header("👥 Mitreisende & Freunde einladen")
+    
+    c_list, c_invite = st.columns([1, 1])
+    with c_list:
+        st.write("**Mitglieder in diesem Projekt:**")
+        st.write(f"- 👑 (Ersteller)")
+        for colab in collaborators:
+            st.write(f"- 👥 {colab['username']}")
+            
+    with c_invite:
+        # Nur der Owner kann Leute einladen
+        if trip['owner_id'] == user_id:
+            with st.form("invite_form"):
+                friend_name = st.text_input("Benutzername des Freundes")
+                submit_invite = st.form_submit_button("Zum Trip hinzufügen")
+                
+                if submit_invite and friend_name:
+                    conn = get_db()
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id FROM users WHERE username = %s", (friend_name,))
+                        friend = cur.fetchone()
+                        if friend:
+                            if friend['id'] == user_id:
+                                st.warning("Du bist bereits der Ersteller dieses Trips.")
+                            else:
+                                try:
+                                    cur.execute("INSERT INTO trip_collaborators (trip_id, user_id) VALUES (%s, %s)", (trip_id, friend['id']))
+                                    conn.commit()
+                                    st.success(f"{friend_name} wurde hinzugefügt!")
+                                    st.rerun()
+                                except:
+                                    st.info("Dieser Nutzer ist bereits im Projekt.")
+                        else:
+                            st.error("Benutzername nicht gefunden. Dein Freund muss sich zuerst registrieren!")
+                    conn.close()
+        else:
+            st.info("Nur der Ersteller des Trips kann weitere Freunde einladen.")
+
+    st.markdown("---")
+    
     # 📅 REISE-KALENDER
-    st.header("📅 Mein Reise-Kalender")
+    st.header("📅 Reise-Kalender")
     with st.form("add_activity_form"):
         c1, c2, c3 = st.columns([1, 1, 2])
         a_date = c1.date_input("Datum", value=datetime.strptime(trip['start_date'], '%Y-%m-%d').date())
@@ -180,7 +279,6 @@ def show_detail(trip_id):
             conn.close()
             st.rerun()
             
-    # Kalender Grid darstellen (als Spalten nebeneinander)
     calendar_data = {}
     for item in itinerary_raw:
         date_str = item['activity_date']
@@ -205,13 +303,12 @@ def show_detail(trip_id):
                             conn.close()
                             st.rerun()
     else:
-        st.info("Noch keine Aktivitäten eingetragen.")
+        st.info("Noch keine Aktivitäten geplant.")
         
     st.markdown("---")
     
     # 📝 TO-DOS & 🎒 PACKLISTE
     col_todo, col_pack = st.columns(2)
-    
     with col_todo:
         st.header("📝 Vorbereitung & To-Dos")
         todo_task = st.text_input("Neues To-Do", key="todo_input")
@@ -258,7 +355,6 @@ def show_detail(trip_id):
 
     # 💰 AUSGABEN & 📌 NOTIZEN
     col_exp, col_notes = st.columns(2)
-    
     with col_exp:
         st.header("💰 Ausgaben-Tracker")
         total_expenses = sum(exp['amount'] for exp in expenses)
@@ -292,7 +388,6 @@ def show_detail(trip_id):
 
     with col_notes:
         st.header("📌 Wichtige Notizen & Infos")
-        # Textarea für Notizen
         notes_text = st.text_area("Hier ist Platz für Buchungsnummern, Hotel-Adressen etc.", value=trip['notes'] or '', height=250)
         if st.button("Notizen speichern 💾"):
             conn = get_db()
@@ -303,7 +398,19 @@ def show_detail(trip_id):
             st.success("Notizen aktualisiert!")
 
 # --- ROUTING LOGIK ---
-if st.session_state["current_trip_id"] is None:
-    show_overview()
+if not st.session_state["logged_in"]:
+    show_login()
 else:
-    show_detail(st.session_state["current_trip_id"])
+    with st.sidebar:
+        st.write(f"👤 Account: **{st.session_state['username']}**")
+        if st.button("Abmelden 🚪"):
+            st.session_state["logged_in"] = False
+            st.session_state["user_id"] = None
+            st.session_state["username"] = ""
+            st.session_state["current_trip_id"] = None
+            st.rerun()
+
+    if st.session_state["current_trip_id"] is None:
+        show_overview()
+    else:
+        show_detail(st.session_state["current_trip_id"])
