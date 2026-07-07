@@ -3,9 +3,13 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import bcrypt
+from streamlit_cookies_controller import CookieController
 
 # Seiteneinstellungen
 st.set_page_config(page_title="Unser Urlaubsplaner 🌍", layout="wide")
+
+# Cookie Controller initialisieren
+controller = CookieController()
 
 # 1. Datenbank-Verbindung (Erstellt jedes Mal eine frische Verbindung)
 def get_db():
@@ -33,13 +37,24 @@ def init_db():
 
 init_db()
 
-# Session States initialisieren
+# --- REFRESH-SICHERE COOKIE LOGIK ---
+# Holt gespeicherte Login-Daten aus dem Browser-Cookie, falls vorhanden
+saved_user_id = controller.get("user_id")
+saved_username = controller.get("username")
+
 if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-    st.session_state["user_id"] = None
-    st.session_state["username"] = ""
+    if saved_user_id and saved_username:
+        st.session_state["logged_in"] = True
+        st.session_state["user_id"] = int(saved_user_id)
+        st.session_state["username"] = saved_username
+    else:
+        st.session_state["logged_in"] = False
+        st.session_state["user_id"] = None
+        st.session_state["username"] = ""
+
 if "current_trip_id" not in st.session_state:
     st.session_state["current_trip_id"] = None
+
 
 # --- DYNAMISCHES LOGIN & REGISTRIERUNGS-FENSTER ---
 def show_login():
@@ -62,9 +77,15 @@ def show_login():
                     if user:
                         stored_password_hash = user['password'].encode('utf-8')
                         if bcrypt.checkpw(password.encode('utf-8'), stored_password_hash):
+                            # In Session State speichern
                             st.session_state["logged_in"] = True
                             st.session_state["user_id"] = user['id']
                             st.session_state["username"] = username
+                            
+                            # Dauerhaft im Browser-Cookie speichern
+                            controller.set("user_id", str(user['id']))
+                            controller.set("username", username)
+                            
                             st.success("Erfolgreich eingeloggt!")
                             conn.close()
                             st.rerun()
@@ -111,7 +132,6 @@ def show_overview():
         
         visible_trip_ids = [t['id'] for t in trips_raw]
         if visible_trip_ids:
-            # Holt alle Ausgaben der Trips inklusive Informationen zur Anzahl der Teilnehmer pro Trip
             cur.execute('''
                 SELECT e.*, 
                        (SELECT COUNT(*) + 1 FROM trip_collaborators WHERE trip_id = e.trip_id) as total_members
@@ -123,12 +143,10 @@ def show_overview():
             all_expenses = []
     conn.close()
     
-    # Berechnungen für dein persönliches, anteiliges Finanz-Dashboard
     total_all_trips = 0.0
     category_totals = {'Transport': 0.0, 'Unterkunft': 0.0, 'Verpflegung': 0.0, 'Aktivitäten': 0.0}
     
     for exp in all_expenses:
-        # Ermitteln, wie viel DU von dieser Ausgabe bezahlst
         amt = exp['amount']
         mode = exp['split_mode']
         is_buyer = (exp['user_id'] == user_id)
@@ -140,7 +158,6 @@ def show_overview():
         elif mode == 'geteilt':
             personal_share = amt / members_count
         elif mode == 'kreditkarte':
-            # Bei gemeinsamer Kreditkarte zahlt rechnerisch jeder zu gleichen Teilen
             personal_share = amt / members_count
             
         total_all_trips += personal_share
@@ -148,7 +165,6 @@ def show_overview():
         if cat in category_totals:
             category_totals[cat] += personal_share
 
-    # 💰 FINANZ-DASHBOARD
     st.header("💰 Mein Finanz-Dashboard (Deine anteiligen Kosten)")
     col_total, col_cats = st.columns([1, 2])
     with col_total:
@@ -162,7 +178,6 @@ def show_overview():
         
     st.markdown("---")
     
-    # ➕ NEUEN TRIP PLANEN
     with st.expander("➕ Neuen Trip planen"):
         with st.form("add_trip_form"):
             title = st.text_input("Titel (z.B. Roadtrip durch Italien)")
@@ -182,7 +197,6 @@ def show_overview():
                 st.success("Trip gespeichert!")
                 st.rerun()
 
-    # 🗺️ GEPLANTE TRIPS ANZEIGEN
     st.header("Meine Urlaube")
     today = datetime.now().date()
     
@@ -239,7 +253,6 @@ def show_detail(trip_id):
         ''', (trip_id,))
         all_todos = cur.fetchall()
         
-        # Holt alle Ausgaben mit dem Klarnamen des Käufers
         cur.execute('''
             SELECT e.*, u.username as buyer 
             FROM expenses e 
@@ -258,7 +271,6 @@ def show_detail(trip_id):
     todos = [t for t in all_todos if t['type'] == 'task']
     packing_list = [t for t in all_todos if t['type'] == 'pack' and t['user_id'] == user_id]
     
-    # Gesamtanzahl aller dem Trip zugeordneten Personen (Besitzer + Collaborators)
     total_trip_members = len(collaborators) + 1
     
     if st.button("← Zurück zur Übersicht"):
@@ -268,7 +280,6 @@ def show_detail(trip_id):
     st.title(trip['title'])
     st.write(f"📍 **Ziel:** {trip['destination']} | 📅 {trip['start_date']} bis {trip['end_date']}")
     
-    # 👥 COLLABORATOR MANAGEMENT
     st.markdown("---")
     st.header("👥 Mitreisende & Freunde einladen")
     
@@ -308,8 +319,6 @@ def show_detail(trip_id):
             st.info("Nur der Ersteller des Trips kann weitere Freunde einladen.")
 
     st.markdown("---")
-    
-    # 📅 REISE-KALENDER
     st.header("📅 Reise-Kalender")
     with st.form("add_activity_form"):
         c1, c2, c3 = st.columns([1, 1, 2])
@@ -354,8 +363,6 @@ def show_detail(trip_id):
         st.info("Noch keine Aktivitäten geplant.")
         
     st.markdown("---")
-    
-    # 📝 TO-DOS & 🎒 PACKLISTE
     col_todo, col_pack = st.columns(2)
     
     with col_todo:
@@ -404,8 +411,6 @@ def show_detail(trip_id):
                 st.rerun()
 
     st.markdown("---")
-
-    # 💰 AUSGABEN WITH SMART SPLIT
     col_exp, col_notes = st.columns(2)
     with col_exp:
         st.header("💰 Ausgaben-Tracker")
@@ -417,7 +422,6 @@ def show_detail(trip_id):
             category = st.selectbox("Kategorie", ["Transport", "Unterkunft", "Verpflegung", "Aktivitäten"])
             description = st.text_input("Notiz (z.B. Hostel Rom)")
             
-            # Neue Option für die Abrechnungsmethode
             split_mode = st.selectbox(
                 "Wie soll abgerechnet werden?", 
                 [
@@ -429,7 +433,6 @@ def show_detail(trip_id):
             submit_exp = st.form_submit_button("Eintrag speichern")
             
             if submit_exp and amount:
-                # Mapping der deutschen Formularoptionen auf die Datenbank-Keys
                 mode_key = 'geteilt'
                 if "alleine" in split_mode:
                     mode_key = 'alleine'
@@ -447,7 +450,6 @@ def show_detail(trip_id):
                 st.rerun()
                 
         for exp in expenses:
-            # Schönere Textanzeige für den Modus bauen
             if exp['split_mode'] == 'alleine':
                 split_text = "🔒 Nur für sich"
             elif exp['split_mode'] == 'kreditkarte':
@@ -488,10 +490,15 @@ else:
     with st.sidebar:
         st.write(f"👤 Account: **{st.session_state['username']}**")
         if st.button("Abmelden 🚪"):
+            # Session löschen
             st.session_state["logged_in"] = False
             st.session_state["user_id"] = None
             st.session_state["username"] = ""
             st.session_state["current_trip_id"] = None
+            
+            # Browser-Cookies aktiv löschen
+            controller.remove("user_id")
+            controller.remove("username")
             st.rerun()
 
     if st.session_state["current_trip_id"] is None:
